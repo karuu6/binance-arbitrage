@@ -5,7 +5,10 @@ import datetime
 from multiprocessing.pool import ThreadPool
 from config import *
 from binance.client import Client
-from binance.websockets import BinanceSocketManager
+import sys
+
+#logfile
+#sys.stdout=open('log', 'w')
 
 
 PRICE_POOL=ThreadPool()
@@ -20,9 +23,9 @@ BUY="bids"
 SELL="asks"
 FEE=0.05/100
 
-QTY=0.002
-INCR=0.0000001
-DECR=0.0000001
+QTY=0.0015
+INCR=0.000001
+DECR=0.000001
 U_INCR=0.01
 U_DECR=0.01
 
@@ -34,13 +37,13 @@ client=Client(KEY,SECRET)
 
 def check_order(o):
 	global client
-	if get_orders():
+	try:
 		client.cancel_order(
 			symbol=o['symbol'],
-			orderId=o['orderId'])
-		return False
-	else:
-		return True
+			orderId=o['orderId'],
+			recvWindow=36000)
+	except:
+		pass
 
 
 def buy(symbol, b):
@@ -49,7 +52,8 @@ def buy(symbol, b):
 	o=client.order_limit_buy(
 		symbol=symbol,
 		quantity=b[0],
-		price=b[1])
+		price=b[1],
+		recvWindow=36000)
 
 	time.sleep(3)
 	check_order(o)
@@ -61,7 +65,8 @@ def sell(symbol, b):
 	o=client.order_limit_sell(
     	symbol=symbol,
 		quantity=b[0],
-	    price=b[1])
+	    price=b[1],
+	    recvWindow=36000)
 
 	time.sleep(3)
 	check_order(o)
@@ -76,14 +81,16 @@ def start(eth,btc,usd):
 	new_usd=round(float(price_usd), 2)
 	new_btc=round(float(price_btc), 2)
 
-	o2=None
+	#print(str(new_btc) + ' ' + str(round(amt_btc,6)))
+	#print(str(new_eth) + ' ' + str(round(amt_eth,3)))
+	#print(str(new_usd) + ' ' + str(round(amt_usd,5)))
 
-	o1 = ORDER_POOL.apply_async(buy, ("ETHBTC", [round(amt_eth,3), new_eth])).get()
-	if o1:	
-		o2 = ORDER_POOL.apply_async(sell, ("ETHUSDT", [round(amt_usd,3), new_usd])).get()
-	if o2:
-		o3 = ORDER_POOL.apply_async(buy, ("BTCUSDT", [round(amt_btc,6), new_btc])).get()
-
+	o1 = threading.Thread(target=buy, args=("ETHBTC", [round(amt_eth,3), new_eth]))
+	o1.start()
+	o2 = threading.Thread(target=sell, args=("ETHUSDT", [round(amt_usd,5), new_usd]))
+	o2.start()
+	o3 = threading.Thread(target=buy, args=("BTCUSDT", [round(amt_btc,6), new_btc]))
+	o3.start()
 
 def get_order_book(symbol):
 	params={"symbol":symbol, "limit":5}
@@ -91,23 +98,8 @@ def get_order_book(symbol):
 	return requests.get(BASE+"/api/v1/depth",params=params).json()
 
 
-def get_orders():
-	global client
-
-	o1=client.get_open_orders(symbol='BTCUSDT')
-	o2=client.get_open_orders(symbol='ETHBTC')
-	o3=client.get_open_orders(symbol='ETHUSDT')
-
-	_len = len(o1) + len(o2) + len(o3)
-	if _len > 0:
-		return True
-	else:
-		return False
-
 def run():
-	global _SHUTDOWN
-
-	while not get_orders():
+	while 1:
 		eth=PRICE_POOL.apply_async(get_order_book, ("ETHBTC",))
 		btc=PRICE_POOL.apply_async(get_order_book, ("BTCUSDT",))
 		usd=PRICE_POOL.apply_async(get_order_book, ("ETHUSDT",))
@@ -117,23 +109,26 @@ def run():
 
 def logic(eth,btc,usdt):
 	price_eth=float(eth[BUY][0][0])+INCR
-	amt_eth = (1-FEE)*(float(QTY)/float(price_eth))
+	amt_eth = float(QTY)/price_eth
 	_eth=(amt_eth, price_eth)
 
 	price_usd=float(usdt[SELL][0][0])-U_DECR
-	amt_usd=(1-FEE)*(float(amt_eth)*float(price_usd))
+	amt_usd=float(amt_eth)
 	_usd=(amt_usd, price_usd)
+	qty_usd=float(amt_eth)*price_usd
 
 	price_btc=float(btc[BUY][0][0])+U_INCR
-	amt_btc=(1-FEE)*(float(amt_usd)/float(price_btc))
+	amt_btc=float(qty_usd)/price_btc
 	_btc=(amt_btc, price_btc)
 
 
-	if round(amt_btc,6)>round(QTY,6):
-		print("[%s] FOUND ARBITRAGE %f" % (str(_time()),round(amt_btc,6)))
-		start(_eth,_btc,_usd)
+	if (1-(FEE*3)) * amt_btc>QTY+0.000001:
+		print("[%s] FOUND ARBITRAGE %s" % (str(_time()),str(amt_btc)))
+		t=threading.Thread(target=start, args=(_eth,_btc,_usd))
+		t.start()
 	else:
-		print("[%s] NO ARBITRAGE %f" % (str(_time()),amt_btc))
+		print("[%s] NO ARBITRAGE %s" % (str(_time()),str(amt_btc)))
+
 
 
 run()
